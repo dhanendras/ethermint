@@ -7,7 +7,7 @@ import (
 const (
 	DefaultCodespace sdk.CodespaceType = 2
 
-	CodeInvalidValue      sdk.CodeType = 101
+	CodeInvalidValue sdk.CodeType = 101
 )
 
 func codeToDefaultMsg(code sdk.CodeType) string {

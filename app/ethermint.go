@@ -3,6 +3,12 @@ package app
 import (
 	bam "github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/wire"
+	"github.com/cosmos/ethermint/auth"
+	"github.com/cosmos/ethermint/types"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/params"
+	dbm "github.com/tendermint/tendermint/libs/db"
+	"github.com/tendermint/tendermint/libs/log"
 )
 
 const (
@@ -25,10 +31,20 @@ type EthermintApp struct {
 
 // NewEthermintApp returns a reference to a new initialized Ethermint
 // application.
-func NewEthermintApp(opts ...func(*EthermintApp)) *EthermintApp {
-	app := &EthermintApp{}
+func NewEthermintApp(logger log.Logger, db dbm.DB, config *params.ChainConfig, sdkAddress common.Address, opts ...func(*EthermintApp)) *EthermintApp {
 
-	// TODO: implement constructor
+	// Create codec here and register structs/interfaces in types using RegisterAmino(cdc)
+	cdc := types.NewCodec()
+
+	app := &EthermintApp{
+		BaseApp: bam.NewBaseApp(appName, cdc, logger, db),
+		codec:   cdc,
+	}
+
+	// SetSDKAddress
+	types.SetSDKAddress(sdkAddress)
+
+	app.SetAnteHandler(auth.EthAnteHandler(config, sdkAddress))
 
 	for _, opt := range opts {
 		opt(app)
