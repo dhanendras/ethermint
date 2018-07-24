@@ -120,10 +120,16 @@ func (tx Transaction) ConvertTx() ethtypes.Transaction {
 	return *ethTx
 }
 
+// IsSDKTx returns a boolean reflecting if the transaction is an SDK
+// transaction or not based on the recipient address.
+func (tx Transaction) IsSDKTx() bool {
+	return bytes.Equal(tx.data.Recipient.Bytes(), sdkAddress.Bytes())
+}
+
 // GetMsgs implements the Cosmos sdk.Tx interface. If the to/recipient address
 // is the SDK address, the inner (SDK) messages will be returned.
 func (tx Transaction) GetMsgs() []sdk.Msg {
-	if bytes.Equal(tx.data.Recipient.Bytes(), sdkAddress.Bytes()) {
+	if tx.IsSDKTx() {
 		innerTx, err := tx.GetInnerTx()
 		if err != nil {
 			// TODO: Should we panic here?

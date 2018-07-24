@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"bytes"
 	"math/big"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -34,7 +33,7 @@ func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address) sd
 			return ctx, sdk.ErrUnauthorized("signature verification failed").Result(), true
 		}
 
-		if bytes.Equal(ethTx.To().Bytes(), sdkAddress.Bytes()) {
+		if mintTx.IsSDKTx() {
 			innerTx, err := mintTx.GetInnerTx()
 			if err != nil {
 				return ctx, err.Result(), true
