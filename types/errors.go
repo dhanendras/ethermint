@@ -6,8 +6,7 @@ import (
 
 const (
 	DefaultCodespace sdk.CodespaceType = 2
-
-	CodeInvalidValue sdk.CodeType = 101
+	CodeInvalidValue sdk.CodeType      = 101
 )
 
 func codeToDefaultMsg(code sdk.CodeType) string {
@@ -17,8 +16,8 @@ func codeToDefaultMsg(code sdk.CodeType) string {
 	}
 }
 
-//----------------------------------------
-// Error constructors
+// ErrInvalidValue returns a standardized SDK error for a given codespace and
+// message.
 func ErrInvalidValue(codespace sdk.CodespaceType, msg string) sdk.Error {
 	return sdk.NewError(codespace, CodeInvalidValue, msg)
 }

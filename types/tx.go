@@ -1,57 +1,74 @@
 package types
 
 import (
+	"bytes"
 	"math/big"
-	"reflect"
+	"sync"
 	"sync/atomic"
-
-	"github.com/ethereum/go-ethereum/core/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/wire"
-	"github.com/ethereum/go-ethereum/common"
+
+	ethcmn "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
 var (
-	sdkAddress common.Address
+	sdkAddress     ethcmn.Address
+	sdkAddressOnce sync.Once
 )
 
-// Copied Ethereum Transaction to implement both sdk.Msg and sdk.Tx interface
-type Transaction struct {
-	data txdata
-	// caches
-	hash atomic.Value
-	size atomic.Value
-	from atomic.Value
-}
+type (
+	// Transaction implements the Ethereum transaction structure as an exact
+	// copy. It implements the Cosmos sdk.Tx interface. Due to the private
+	// fields, it must be replicated here and cannot be embedded or used
+	// directly.
+	Transaction struct {
+		data TxData
 
-type txdata struct {
-	AccountNonce uint64          `json:"nonce"    gencodec:"required"`
-	Price        *big.Int        `json:"gasPrice" gencodec:"required"`
-	GasLimit     uint64          `json:"gas"      gencodec:"required"`
-	Recipient    *common.Address `json:"to"       rlp:"nil"` // nil means contract creation
-	Amount       *big.Int        `json:"value"    gencodec:"required"`
-	Payload      []byte          `json:"input"    gencodec:"required"`
+		// caches
+		hash atomic.Value
+		size atomic.Value
+		from atomic.Value
+	}
 
-	// Signature values
-	V *big.Int `json:"v" gencodec:"required"`
-	R *big.Int `json:"r" gencodec:"required"`
-	S *big.Int `json:"s" gencodec:"required"`
+	// TxData implements the Ethereum transaction data structure as an exact
+	// copy. It is used solely as intended in Ethereum abiding by the protocol
+	// except for the payload field which may embed a Cosmos SDK transaction.
+	TxData struct {
+		AccountNonce uint64          `json:"nonce"    gencodec:"required"`
+		Price        *big.Int        `json:"gasPrice" gencodec:"required"`
+		GasLimit     uint64          `json:"gas"      gencodec:"required"`
+		Recipient    *ethcmn.Address `json:"to"       rlp:"nil"` // nil means contract creation
+		Amount       *big.Int        `json:"value"    gencodec:"required"`
+		Payload      []byte          `json:"input"    gencodec:"required"`
 
-	// This is only used when marshaling to JSON.
-	Hash *common.Hash `json:"hash" rlp:"-"`
-}
+		// signature values
+		V *big.Int `json:"v" gencodec:"required"`
+		R *big.Int `json:"r" gencodec:"required"`
+		S *big.Int `json:"s" gencodec:"required"`
 
-type txdataMarshaling struct {
-	AccountNonce hexutil.Uint64
-	Price        *hexutil.Big
-	GasLimit     hexutil.Uint64
-	Amount       *hexutil.Big
-	Payload      hexutil.Bytes
-	V            *hexutil.Big
-	R            *hexutil.Big
-	S            *hexutil.Big
+		// hash is only used when marshaling to JSON
+		Hash *ethcmn.Hash `json:"hash" rlp:"-"`
+	}
+
+	// TODO: Do we actually need this?
+	txDataMarshaling struct {
+		AccountNonce hexutil.Uint64
+		Price        *hexutil.Big
+		GasLimit     hexutil.Uint64
+		Amount       *hexutil.Big
+		Payload      hexutil.Bytes
+		V            *hexutil.Big
+		R            *hexutil.Big
+		S            *hexutil.Big
+	}
+)
+
+// TxData returns the Ethereum transaction data.
+func (tx Transaction) TxData() TxData {
+	return tx.data
 }
 
 // Implement sdk.Msg Interface
@@ -62,9 +79,11 @@ func (tx Transaction) ValidateBasic() sdk.Error {
 	if tx.data.Price.Sign() != 1 {
 		return ErrInvalidValue(2, "Price must be positive")
 	}
+
 	if tx.data.Amount.Sign() != 1 {
 		return ErrInvalidValue(2, "Amount must be positive")
 	}
+
 	return nil
 }
 
@@ -73,25 +92,24 @@ func (tx Transaction) GetSignBytes() []byte {
 	return nil
 }
 
-// Implement sdk.Msg Interface. This won't work until tx is already signed
+// GetSigners implements the Cosmos sdk.Msg interface.
+//
+// CONTRACT: The transaction must already be signed.
 func (tx Transaction) GetSigners() []sdk.AccAddress {
 	addr := tx.from.Load().([]byte)
 	if addr == nil {
 		return nil
 	}
+
 	return []sdk.AccAddress{addr}
 }
 
-// Return inner txdata struct
-func (tx Transaction) TxData() txdata {
-	return tx.data
-}
-
 // Convert this sdk copy of Ethereum transaction to Ethereum transaction
-func (tx Transaction) ConvertTx() types.Transaction {
-
-	ethTx := types.NewTransaction(tx.data.AccountNonce, *tx.data.Recipient, tx.data.Amount,
-		tx.data.GasLimit, tx.data.Price, tx.data.Payload)
+func (tx Transaction) ConvertTx() ethtypes.Transaction {
+	ethTx := ethtypes.NewTransaction(
+		tx.data.AccountNonce, *tx.data.Recipient, tx.data.Amount,
+		tx.data.GasLimit, tx.data.Price, tx.data.Payload,
+	)
 
 	// Must somehow set ethTx.data.{V, R, S}
 	// Currently the only idea I have is to make ConvertTx take in a signer
@@ -102,67 +120,77 @@ func (tx Transaction) ConvertTx() types.Transaction {
 	return *ethTx
 }
 
-// Implement sdk.Tx interface
+// GetMsgs implements the Cosmos sdk.Tx interface. If the to/recipient address
+// is the SDK address, the inner (SDK) messages will be returned.
 func (tx Transaction) GetMsgs() []sdk.Msg {
-	if reflect.DeepEqual(*tx.data.Recipient, sdkAddress) {
-		cdc := NewCodec()
-		innerTx := InnerTransaction{}
-		err := cdc.UnmarshalBinary(tx.data.Payload, &innerTx)
+	if bytes.Equal(tx.data.Recipient.Bytes(), sdkAddress.Bytes()) {
+		innerTx, err := tx.GetInnerTx()
 		if err != nil {
+			// TODO: Should we panic here?
 			return nil
 		}
+
 		return innerTx.GetMsgs()
 	}
+
 	return []sdk.Msg{tx}
 }
 
-// Get inner tx. Note: Will panic if decoding fails
+// GetInnerTx returns the inner (SDK) transaction from an Ethereum transaction.
+// It returns an error if decoding the inner transaction fails.
+//
+// CONTRACT: The payload field of an Ethereum transaction must contain a valid
+// encoded SDK transaction.
 func (tx Transaction) GetInnerTx() (InnerTransaction, sdk.Error) {
-	cdc := NewCodec()
+	// TODO: Fix...
+	cdc := wire.NewCodec()
 	innerTx := InnerTransaction{}
+
 	err := cdc.UnmarshalBinary(tx.data.Payload, &innerTx)
 	if err != nil {
-		return InnerTransaction{}, sdk.ErrTxDecode("Inner transaction decoding failed")
+		return InnerTransaction{}, sdk.ErrTxDecode("inner transaction decoding failed")
 	}
+
 	return innerTx, nil
 }
 
-// Inner Transaction to be encoded into payload to handle sdk Msgs
+// InnerTransaction reflects an SDK transaction. It is to be encoded into the
+// payload field of an Ethereum transaction in order to route and handle SDK
+// transactions.
 type InnerTransaction struct {
-	Msgs       []sdk.Msg
+	Messages   []sdk.Msg
 	Signatures [][]byte
 }
 
-// Implement sdk.Tx interface
+// GetMsgs implements the sdk.Tx interface. It returns all the SDK transaction
+// messages.
 func (tx InnerTransaction) GetMsgs() []sdk.Msg {
-	return tx.Msgs
+	return tx.Messages
 }
 
-// Return all required signers of Tx accumulated from msgs
-func (tx InnerTransaction) GetRequiredSigners() []common.Address {
+// GetRequiredSigners returns all the required signers of an SDK transaction
+// accumulated from messages. It returns them in a deterministic fashion given
+// a list of messages.
+func (tx InnerTransaction) GetRequiredSigners() []ethcmn.Address {
 	seen := map[string]bool{}
-	var signers []common.Address
+
+	var signers []ethcmn.Address
 	for _, msg := range tx.GetMsgs() {
 		for _, addr := range msg.GetSigners() {
 			if !seen[addr.String()] {
-				signers = append(signers, common.BytesToAddress(addr))
+				signers = append(signers, ethcmn.BytesToAddress(addr))
 				seen[addr.String()] = true
 			}
 		}
 	}
+
 	return signers
 }
 
-// Sets SDKAddress. Only allowed to be set once
-func SetSDKAddress(addr common.Address) {
-	if sdkAddress.Bytes() == nil {
+// SetSDKAddress sets the internal sdkAddress value. It should ever be set
+// once.
+func SetSDKAddress(addr ethcmn.Address) {
+	sdkAddressOnce.Do(func() {
 		sdkAddress = addr
-	}
-}
-
-func NewCodec() *wire.Codec {
-	cdc := wire.NewCodec()
-	cdc.RegisterInterface((*sdk.Msg)(nil), nil)
-	cdc.RegisterConcrete(InnerTransaction{}, "types/InnerTx", nil)
-	return cdc
+	})
 }
