@@ -1,47 +1,63 @@
 package types
 
 import (
-	"math/big"
-	"reflect"
-	"sync/atomic"
+	"bytes"
 	"encoding/json"
-
-	"github.com/ethereum/go-ethereum/core/types"
+	"math/big"
+	"sync"
+	"sync/atomic"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/wire"
-	"github.com/ethereum/go-ethereum/common"
+
+	ethcmn "github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
 var (
-	sdkAddress common.Address
-	Cdc = NewCodec()
+	sdkAddress     ethcmn.Address
+	sdkAddressOnce sync.Once
+	Cdc            = NewCodec()
 )
 
-// Copied Ethereum Transaction to implement both sdk.Msg and sdk.Tx interface
-type Transaction struct {
-	data txdata
-	// caches
-	hash atomic.Value
-	size atomic.Value
-	from atomic.Value
-}
+type (
+	// Transaction implements the Ethereum transaction structure as an exact
+	// copy. It implements the Cosmos sdk.Tx interface. Due to the private
+	// fields, it must be replicated here and cannot be embedded or used
+	// directly.
+	Transaction struct {
+		data TxData
 
-type txdata struct {
-	AccountNonce uint64          `json:"nonce"    gencodec:"required"`
-	Price        *big.Int        `json:"gasPrice" gencodec:"required"`
-	GasLimit     uint64          `json:"gas"      gencodec:"required"`
-	Recipient    *common.Address `json:"to"       rlp:"nil"` // nil means contract creation
-	Amount       *big.Int        `json:"value"    gencodec:"required"`
-	Payload      []byte          `json:"input"    gencodec:"required"`
+		// caches
+		hash atomic.Value
+		size atomic.Value
+		from atomic.Value
+	}
 
-	// Signature values
-	V *big.Int `json:"v" gencodec:"required"`
-	R *big.Int `json:"r" gencodec:"required"`
-	S *big.Int `json:"s" gencodec:"required"`
+	// TxData implements the Ethereum transaction data structure as an exact
+	// copy. It is used solely as intended in Ethereum abiding by the protocol
+	// except for the payload field which may embed a Cosmos SDK transaction.
+	TxData struct {
+		AccountNonce uint64          `json:"nonce"    gencodec:"required"`
+		Price        *big.Int        `json:"gasPrice" gencodec:"required"`
+		GasLimit     uint64          `json:"gas"      gencodec:"required"`
+		Recipient    *ethcmn.Address `json:"to"       rlp:"nil"` // nil means contract creation
+		Amount       *big.Int        `json:"value"    gencodec:"required"`
+		Payload      []byte          `json:"input"    gencodec:"required"`
 
-	// This is only used when marshaling to JSON.
-	Hash *common.Hash `json:"hash" rlp:"-"`
+		// signature values
+		V *big.Int `json:"v" gencodec:"required"`
+		R *big.Int `json:"r" gencodec:"required"`
+		S *big.Int `json:"s" gencodec:"required"`
+
+		// hash is only used when marshaling to JSON
+		Hash *ethcmn.Hash `json:"hash" rlp:"-"`
+	}
+)
+
+// TxData returns the Ethereum transaction data.
+func (tx Transaction) TxData() TxData {
+	return tx.data
 }
 
 // Implement sdk.Msg Interface
@@ -52,9 +68,11 @@ func (tx Transaction) ValidateBasic() sdk.Error {
 	if tx.data.Price.Sign() != 1 {
 		return ErrInvalidValue(DefaultCodespace, "Price must be positive")
 	}
+
 	if tx.data.Amount.Sign() != 1 {
 		return ErrInvalidValue(DefaultCodespace, "Amount must be positive")
 	}
+
 	return nil
 }
 
@@ -63,25 +81,24 @@ func (tx Transaction) GetSignBytes() []byte {
 	return nil
 }
 
-// Implement sdk.Msg Interface. This won't work until tx is already signed
+// GetSigners implements the Cosmos sdk.Msg interface.
+//
+// CONTRACT: The transaction must already be signed.
 func (tx Transaction) GetSigners() []sdk.AccAddress {
 	addr := tx.from.Load().([]byte)
 	if addr == nil {
 		return nil
 	}
+
 	return []sdk.AccAddress{addr}
 }
 
-// Return inner txdata struct
-func (tx Transaction) TxData() txdata {
-	return tx.data
-}
-
 // Convert this sdk copy of Ethereum transaction to Ethereum transaction
-func (tx Transaction) ConvertTx() types.Transaction {
-
-	ethTx := types.NewTransaction(tx.data.AccountNonce, *tx.data.Recipient, tx.data.Amount,
-		tx.data.GasLimit, tx.data.Price, tx.data.Payload)
+func (tx Transaction) ConvertTx() ethtypes.Transaction {
+	ethTx := ethtypes.NewTransaction(
+		tx.data.AccountNonce, *tx.data.Recipient, tx.data.Amount,
+		tx.data.GasLimit, tx.data.Price, tx.data.Payload,
+	)
 
 	// Must somehow set ethTx.data.{V, R, S}
 	// Currently the only idea I have is to make ConvertTx take in a signer
@@ -92,17 +109,24 @@ func (tx Transaction) ConvertTx() types.Transaction {
 	return *ethTx
 }
 
-// Implement sdk.Tx interface
+// IsSDKTx returns a boolean reflecting if the transaction is an SDK
+// transaction or not based on the recipient address.
+func (tx Transaction) IsEmbeddedTx() bool {
+	return bytes.Equal(tx.data.Recipient.Bytes(), sdkAddress.Bytes())
+}
+
+// GetMsgs implements the Cosmos sdk.Tx interface. If the to/recipient address
+// is the SDK address, the inner (SDK) messages will be returned.
 func (tx Transaction) GetMsgs() []sdk.Msg {
-	if reflect.DeepEqual(*tx.data.Recipient, sdkAddress) {
-		cdc := NewCodec()
-		innerTx := EmbeddedTx{}
-		err := cdc.UnmarshalBinary(tx.data.Payload, &innerTx)
+	if tx.IsEmbeddedTx() {
+		innerTx, err := tx.GetEmbeddedTx()
 		if err != nil {
-			return nil
+			panic(err)
 		}
+
 		return innerTx.GetMsgs()
 	}
+
 	return []sdk.Msg{tx}
 }
 
@@ -114,32 +138,35 @@ func (tx Transaction) GetEmbeddedTx() (EmbeddedTx, sdk.Error) {
 	if err != nil {
 		return EmbeddedTx{}, sdk.ErrTxDecode("Inner sdk transaction decoding failed")
 	}
+
 	return innerTx, nil
 }
 
 // EmbeddedTx to be encoded into payload to handle sdk Msgs
 type EmbeddedTx struct {
-	Msgs       []sdk.Msg
+	Messages   []sdk.Msg
 	Signatures [][]byte
 }
 
 // Implement sdk.Tx interface
 func (tx EmbeddedTx) GetMsgs() []sdk.Msg {
-	return tx.Msgs
+	return tx.Messages
 }
 
 // Return all required signers of Tx accumulated from msgs
-func (tx EmbeddedTx) GetRequiredSigners() []common.Address {
+func (tx EmbeddedTx) GetRequiredSigners() []ethcmn.Address {
 	seen := map[string]bool{}
-	var signers []common.Address
+
+	var signers []ethcmn.Address
 	for _, msg := range tx.GetMsgs() {
 		for _, addr := range msg.GetSigners() {
 			if !seen[addr.String()] {
-				signers = append(signers, common.BytesToAddress(addr))
+				signers = append(signers, ethcmn.BytesToAddress(addr))
 				seen[addr.String()] = true
 			}
 		}
 	}
+
 	return signers
 }
 
@@ -157,8 +184,8 @@ func EmbeddedSignBytes(chainID string, msgs []sdk.Msg, sequence int64) []byte {
 		msgsBytes = append(msgsBytes, json.RawMessage(msg.GetSignBytes()))
 	}
 	signDoc := EmbeddedSignDoc{
-		ChainID: chainID,
-		Msgs: msgsBytes,
+		ChainID:  chainID,
+		Msgs:     msgsBytes,
 		Sequence: sequence,
 	}
 	bz, err := Cdc.MarshalJSON(signDoc)
@@ -168,17 +195,18 @@ func EmbeddedSignBytes(chainID string, msgs []sdk.Msg, sequence int64) []byte {
 	return bz
 }
 
-// Sets SDKAddress. Only allowed to be set once
-func SetSDKAddress(addr common.Address) {
-	if sdkAddress.Bytes() == nil {
-		sdkAddress = addr
-	}
-}
-
 func NewCodec() *wire.Codec {
 	cdc := wire.NewCodec()
 	cdc.RegisterInterface((*sdk.Msg)(nil), nil)
 	cdc.RegisterConcrete(EmbeddedTx{}, "types/EmbeddedTx", nil)
 	cdc.RegisterConcrete(Account{}, "types/Account", nil)
 	return cdc
+}
+
+// SetSDKAddress sets the internal sdkAddress value. It should ever be set
+// once.
+func SetSDKAddress(addr ethcmn.Address) {
+	sdkAddressOnce.Do(func() {
+		sdkAddress = addr
+	})
 }

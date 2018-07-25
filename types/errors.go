@@ -19,8 +19,8 @@ func codeToDefaultMsg(code sdk.CodeType) string {
 	}
 }
 
-//----------------------------------------
-// Error constructors
+// ErrInvalidValue returns a standardized SDK error for a given codespace and
+// message.
 func ErrInvalidValue(codespace sdk.CodespaceType, msg string) sdk.Error {
 	return sdk.NewError(codespace, CodeInvalidValue, msg)
 }

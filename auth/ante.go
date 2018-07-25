@@ -1,31 +1,32 @@
 package auth
 
 import (
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/ethermint/types"
-	"github.com/cosmos/ethermint/db"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	ethTypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
-	"math/big"
-	"reflect"
 	"fmt"
+	"math/big"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/ethermint/db"
+	"github.com/cosmos/ethermint/types"
+	ethcmn "github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	ethparams "github.com/ethereum/go-ethereum/params"
 )
 
-// AnteHandler to be passed into baseapp
-// Handles Ethereum transactions and passes SDK transactions to InnerAnteHandler
-func EthAnteHandler(config *params.ChainConfig, sdkAddress common.Address, accountMapper db.AccountMapper) sdk.AnteHandler {
+// EthAnteHandler handles Ethereum transactions and passes SDK transactions to
+// InnerAnteHandler.
+func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, accountMapper db.AccountMapper) sdk.AnteHandler {
 	return func(ctx sdk.Context, tx sdk.Tx) (newCtx sdk.Context, res sdk.Result, abort bool) {
-
-		transact, ok := tx.(types.Transaction)
+		mintTx, ok := tx.(types.Transaction)
 		if !ok {
 			return ctx, sdk.ErrInternal("tx must be an Ethereum transaction").Result(), true
 		}
 
-		txdata := transact.TxData()
+		txData := mintTx.TxData()
+		ctx = ctx.WithGasMeter(sdk.NewGasMeter(int64(txData.GasLimit)))
+		ethTx := mintTx.ConvertTx()
 
-		newCtx = ctx.WithGasMeter(sdk.NewGasMeter(int64(txdata.GasLimit)))
+		newCtx = ctx.WithGasMeter(sdk.NewGasMeter(int64(txData.GasLimit)))
 
 		// AnteHandlers must have their own defer/recover in order
 		// for the BaseApp to know how much gas was used!
@@ -37,7 +38,7 @@ func EthAnteHandler(config *params.ChainConfig, sdkAddress common.Address, accou
 				case sdk.ErrorOutOfGas:
 					log := fmt.Sprintf("out of gas in location: %v", rType.Descriptor)
 					res = sdk.ErrOutOfGas(log).Result()
-					res.GasWanted = int64(txdata.GasLimit)
+					res.GasWanted = int64(txData.GasLimit)
 					res.GasUsed = newCtx.GasMeter().GasConsumed()
 					abort = true
 				default:
@@ -46,34 +47,32 @@ func EthAnteHandler(config *params.ChainConfig, sdkAddress common.Address, accou
 			}
 		}()
 
-		ethTx := transact.ConvertTx()
-
 		// Create correct signer based on config and blockheight
-		signer := ethTypes.MakeSigner(config, big.NewInt(ctx.BlockHeight()))
+		signer := ethtypes.MakeSigner(config, big.NewInt(ctx.BlockHeight()))
 
 		// Check that signature is valid. Maybe better way to do this?
 		// TODO: Maybe we should increment AccountNonce in mapper here as well?
 		_, err := signer.Sender(&ethTx)
 		if err != nil {
-			return ctx, sdk.ErrUnauthorized("Signature verification failed").Result(), true
+			return ctx, sdk.ErrUnauthorized("signature verification failed").Result(), true
 		}
 
-
-		if reflect.DeepEqual(*ethTx.To(), sdkAddress) {
-			embeddedTx, err := transact.GetEmbeddedTx()
+		if mintTx.IsEmbeddedTx() {
+			embeddedTx, err := mintTx.GetEmbeddedTx()
 			if err != nil {
 				return ctx, err.Result(), true
 			}
-			return EmbeddedAnteHandler(newCtx, embeddedTx, accountMapper)
+
+			return EmbeddedAnteHandler(ctx, embeddedTx, accountMapper)
 		}
 
-		// Handle Normal ETH transaction
+		// handle normal Ethereum transaction
 		return ctx, sdk.Result{}, false
 	}
 }
 
-// Since this is an internal antehandler, does not need to follow interface
-// We can change function signature if we want
+// Embeddeded handles an embedded SDK transaction.
+// Since this is an internal ante handler, it does not need to follow the SDK interface.
 func EmbeddedAnteHandler(ctx sdk.Context, tx types.EmbeddedTx, accountMapper db.AccountMapper) (_ sdk.Context, _ sdk.Result, abort bool) {
 	// Validate basic tx without relying on context
 	if err := validateBasic(tx); err != nil {
@@ -123,7 +122,7 @@ func validateBasic(tx types.EmbeddedTx) sdk.Error {
 	return nil
 }
 
-func incrementSequenceNumber(ctx sdk.Context, accountMapper db.AccountMapper, addr common.Address) {
+func incrementSequenceNumber(ctx sdk.Context, accountMapper db.AccountMapper, addr ethcmn.Address) {
 	acc := accountMapper.GetAccount(ctx, addr)
 	acc.AccountNonce += 1
 	accountMapper.SetAccount(ctx, acc)

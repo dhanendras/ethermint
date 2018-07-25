@@ -3,64 +3,78 @@ package app
 import (
 	bam "github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/wire"
+
 	"github.com/cosmos/ethermint/auth"
-	"github.com/cosmos/ethermint/types"
 	edb "github.com/cosmos/ethermint/db"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/params"
-	dbm "github.com/tendermint/tendermint/libs/db"
-	cmn "github.com/tendermint/tendermint/libs/common"
-	"github.com/tendermint/tendermint/libs/log"
+	"github.com/cosmos/ethermint/types"
+
+	ethcmn "github.com/ethereum/go-ethereum/common"
+	ethparams "github.com/ethereum/go-ethereum/params"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	cmn "github.com/tendermint/tendermint/libs/common"
+	dbm "github.com/tendermint/tendermint/libs/db"
+	"github.com/tendermint/tendermint/libs/log"
 )
 
 const (
 	appName = "Ethermint"
 )
 
-// EthermintApp implements an extended ABCI application.
-type EthermintApp struct {
-	*bam.BaseApp
+type (
+	// EthermintApp implements an extended ABCI application. It is an application
+	// that may process transactions through Ethereum's EVM running atop of
+	// Tendermint consensus.
+	EthermintApp struct {
+		*bam.BaseApp
 
-	codec  *wire.Codec
-	sealed bool
+		codec  *wire.Codec
+		sealed bool
 
-	// TODO: stores and keys
-	accountKey *sdk.KVStoreKey
-	
-	// TODO: keepers
+		// TODO: stores and keys
+		accountKey *sdk.KVStoreKey
 
-	// TODO: mappers
-	accountMapper edb.AccountMapper
-}
+		// TODO: keepers
+
+		// TODO: mappers
+		accountMapper edb.AccountMapper
+
+		// TODO: stores and keys
+
+		// TODO: keepers
+
+		// TODO: mappers
+	}
+
+	// Options is a function signature that provides the ability to modify
+	// options of an EthermintApp during initialization.
+	Options func(*EthermintApp)
+)
 
 // NewEthermintApp returns a reference to a new initialized Ethermint
 // application.
-func NewEthermintApp(logger log.Logger, db dbm.DB, config *params.ChainConfig, sdkAddress common.Address, opts ...func(*EthermintApp)) *EthermintApp {
-
-	// Create codec here and register structs/interfaces in types using RegisterAmino(cdc)
-	cdc := types.NewCodec()
+func NewEthermintApp(logger log.Logger, db dbm.DB, cfg *ethparams.ChainConfig, sdkAddr ethcmn.Address, opts ...Options) *EthermintApp {
+	cdc := createCodec()
 
 	app := &EthermintApp{
-		BaseApp: bam.NewBaseApp(appName, cdc, logger, db),
-		codec:   cdc,
+		BaseApp:    bam.NewBaseApp(appName, cdc, logger, db),
+		codec:      cdc,
 		accountKey: sdk.NewKVStoreKey("accounts"),
 	}
 
 	app.accountMapper = edb.NewAccountMapper(app.accountKey, cdc)
 
 	// SetSDKAddress
-	types.SetSDKAddress(sdkAddress)
-
-	app.SetAnteHandler(auth.EthAnteHandler(config, sdkAddress))
+	types.SetSDKAddress(sdkAddr)
+	app.SetAnteHandler(auth.EthAnteHandler(cfg, sdkAddr, app.accountMapper))
 
 	app.MountStoresIAVL(app.accountKey)
-	
+
 	for _, opt := range opts {
 		opt(app)
 	}
 
-	err := app.LoadLatestVersion(accountKey)
+	err := app.LoadLatestVersion(app.accountKey)
 	if err != nil {
 		cmn.Exit(err.Error())
 	}
@@ -73,4 +87,13 @@ func NewEthermintApp(logger log.Logger, db dbm.DB, config *params.ChainConfig, s
 // that change critical components.
 func (app *EthermintApp) seal() {
 	app.sealed = true
+}
+
+// createCodec creates a new amino wire codec and registers all the necessary
+// structures and interfaces needed for the application.
+func createCodec() *wire.Codec {
+	var cdc = wire.NewCodec()
+
+	types.RegisterWire(cdc)
+	return cdc
 }

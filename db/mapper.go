@@ -1,10 +1,10 @@
 package db
 
 import (
-	"github.com/tendermint/go-amino"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/cosmos/ethermint/types"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/tendermint/go-amino"
 )
 
 // Maps address to account
@@ -17,7 +17,7 @@ type AccountMapper struct {
 func NewAccountMapper(accKey sdk.StoreKey, cdc *amino.Codec) AccountMapper {
 	return AccountMapper{
 		accountKey: accKey,
-		cdc: cdc,
+		cdc:        cdc,
 	}
 }
 
@@ -51,7 +51,7 @@ func (am AccountMapper) NewAccount(ctx sdk.Context, addr common.Address) sdk.Err
 		return sdk.ErrUnauthorized("Account for this address already exists")
 	}
 	acc := types.Account{
-		Address: addr,
+		Address:      addr,
 		AccountNonce: 0,
 	}
 	val, err := am.cdc.MarshalBinary(acc)
