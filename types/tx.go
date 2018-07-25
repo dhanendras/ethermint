@@ -4,17 +4,18 @@ import (
 	"math/big"
 	"reflect"
 	"sync/atomic"
+	"encoding/json"
 
 	"github.com/ethereum/go-ethereum/core/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/wire"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
 var (
 	sdkAddress common.Address
+	Cdc = NewCodec()
 )
 
 // Copied Ethereum Transaction to implement both sdk.Msg and sdk.Tx interface
@@ -43,27 +44,16 @@ type txdata struct {
 	Hash *common.Hash `json:"hash" rlp:"-"`
 }
 
-type txdataMarshaling struct {
-	AccountNonce hexutil.Uint64
-	Price        *hexutil.Big
-	GasLimit     hexutil.Uint64
-	Amount       *hexutil.Big
-	Payload      hexutil.Bytes
-	V            *hexutil.Big
-	R            *hexutil.Big
-	S            *hexutil.Big
-}
-
 // Implement sdk.Msg Interface
 func (tx Transaction) Type() string { return "Eth" }
 
 // Implement sdk.Msg Interface
 func (tx Transaction) ValidateBasic() sdk.Error {
 	if tx.data.Price.Sign() != 1 {
-		return ErrInvalidValue(2, "Price must be positive")
+		return ErrInvalidValue(DefaultCodespace, "Price must be positive")
 	}
 	if tx.data.Amount.Sign() != 1 {
-		return ErrInvalidValue(2, "Amount must be positive")
+		return ErrInvalidValue(DefaultCodespace, "Amount must be positive")
 	}
 	return nil
 }
@@ -106,7 +96,7 @@ func (tx Transaction) ConvertTx() types.Transaction {
 func (tx Transaction) GetMsgs() []sdk.Msg {
 	if reflect.DeepEqual(*tx.data.Recipient, sdkAddress) {
 		cdc := NewCodec()
-		innerTx := InnerTransaction{}
+		innerTx := EmbeddedTx{}
 		err := cdc.UnmarshalBinary(tx.data.Payload, &innerTx)
 		if err != nil {
 			return nil
@@ -117,29 +107,29 @@ func (tx Transaction) GetMsgs() []sdk.Msg {
 }
 
 // Get inner tx. Note: Will panic if decoding fails
-func (tx Transaction) GetInnerTx() (InnerTransaction, sdk.Error) {
+func (tx Transaction) GetEmbeddedTx() (EmbeddedTx, sdk.Error) {
 	cdc := NewCodec()
-	innerTx := InnerTransaction{}
+	innerTx := EmbeddedTx{}
 	err := cdc.UnmarshalBinary(tx.data.Payload, &innerTx)
 	if err != nil {
-		return InnerTransaction{}, sdk.ErrTxDecode("Inner transaction decoding failed")
+		return EmbeddedTx{}, sdk.ErrTxDecode("Inner sdk transaction decoding failed")
 	}
 	return innerTx, nil
 }
 
-// Inner Transaction to be encoded into payload to handle sdk Msgs
-type InnerTransaction struct {
+// EmbeddedTx to be encoded into payload to handle sdk Msgs
+type EmbeddedTx struct {
 	Msgs       []sdk.Msg
 	Signatures [][]byte
 }
 
 // Implement sdk.Tx interface
-func (tx InnerTransaction) GetMsgs() []sdk.Msg {
+func (tx EmbeddedTx) GetMsgs() []sdk.Msg {
 	return tx.Msgs
 }
 
 // Return all required signers of Tx accumulated from msgs
-func (tx InnerTransaction) GetRequiredSigners() []common.Address {
+func (tx EmbeddedTx) GetRequiredSigners() []common.Address {
 	seen := map[string]bool{}
 	var signers []common.Address
 	for _, msg := range tx.GetMsgs() {
@@ -153,6 +143,31 @@ func (tx InnerTransaction) GetRequiredSigners() []common.Address {
 	return signers
 }
 
+// Creates simple SignDoc for EmbeddedTx signer to sign over
+type EmbeddedSignDoc struct {
+	ChainID  string
+	Msgs     []json.RawMessage
+	Sequence int64
+}
+
+// Creates signBytes for signer with given arguments
+func EmbeddedSignBytes(chainID string, msgs []sdk.Msg, sequence int64) []byte {
+	var msgsBytes []json.RawMessage
+	for _, msg := range msgs {
+		msgsBytes = append(msgsBytes, json.RawMessage(msg.GetSignBytes()))
+	}
+	signDoc := EmbeddedSignDoc{
+		ChainID: chainID,
+		Msgs: msgsBytes,
+		Sequence: sequence,
+	}
+	bz, err := Cdc.MarshalJSON(signDoc)
+	if err != nil {
+		panic(err)
+	}
+	return bz
+}
+
 // Sets SDKAddress. Only allowed to be set once
 func SetSDKAddress(addr common.Address) {
 	if sdkAddress.Bytes() == nil {
@@ -163,6 +178,7 @@ func SetSDKAddress(addr common.Address) {
 func NewCodec() *wire.Codec {
 	cdc := wire.NewCodec()
 	cdc.RegisterInterface((*sdk.Msg)(nil), nil)
-	cdc.RegisterConcrete(InnerTransaction{}, "types/InnerTx", nil)
+	cdc.RegisterConcrete(EmbeddedTx{}, "types/EmbeddedTx", nil)
+	cdc.RegisterConcrete(Account{}, "types/Account", nil)
 	return cdc
 }

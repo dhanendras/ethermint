@@ -5,9 +5,11 @@ import (
 )
 
 const (
+	// Reserve this Codespace for Ethermint, as 0 and 1 are reserved by SDK
 	DefaultCodespace sdk.CodespaceType = 2
 
-	CodeInvalidValue sdk.CodeType = 101
+	// Reserve CodeInvalidValue with first non-OK codetype
+	CodeInvalidValue sdk.CodeType = 1
 )
 
 func codeToDefaultMsg(code sdk.CodeType) string {
