@@ -5,12 +5,13 @@ import (
 	"github.com/cosmos/cosmos-sdk/wire"
 	"github.com/cosmos/ethermint/auth"
 	"github.com/cosmos/ethermint/types"
-	"github.com/cosmos/ethermint/db"
+	edb "github.com/cosmos/ethermint/db"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/params"
 	dbm "github.com/tendermint/tendermint/libs/db"
 	cmn "github.com/tendermint/tendermint/libs/common"
 	"github.com/tendermint/tendermint/libs/log"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 const (
@@ -30,7 +31,7 @@ type EthermintApp struct {
 	// TODO: keepers
 
 	// TODO: mappers
-	accountMapper db.AccountMapper
+	accountMapper edb.AccountMapper
 }
 
 // NewEthermintApp returns a reference to a new initialized Ethermint
@@ -43,10 +44,10 @@ func NewEthermintApp(logger log.Logger, db dbm.DB, config *params.ChainConfig, s
 	app := &EthermintApp{
 		BaseApp: bam.NewBaseApp(appName, cdc, logger, db),
 		codec:   cdc,
-		accountKey: sdk.NewKVStoreKey("accounts")
+		accountKey: sdk.NewKVStoreKey("accounts"),
 	}
 
-	app.accountMapper = db.NewAccountMapper(accountKey, cdc)
+	app.accountMapper = edb.NewAccountMapper(app.accountKey, cdc)
 
 	// SetSDKAddress
 	types.SetSDKAddress(sdkAddress)
