@@ -177,6 +177,7 @@ func (tx EmbeddedTx) GetRequiredSigners() []ethcmn.Address {
 type EmbeddedSignDoc struct {
 	ChainID  string
 	Msgs     []json.RawMessage
+	AccountNumber int64
 	Sequence int64
 }
 

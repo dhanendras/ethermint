@@ -2,10 +2,10 @@ package app
 
 import (
 	bam "github.com/cosmos/cosmos-sdk/baseapp"
+	"github.com/cosmos/cosmos-sdk/x/auth"
 	"github.com/cosmos/cosmos-sdk/wire"
 
-	"github.com/cosmos/ethermint/auth"
-	edb "github.com/cosmos/ethermint/db"
+	handle "github.com/cosmos/ethermint/handle"
 	"github.com/cosmos/ethermint/types"
 
 	ethcmn "github.com/ethereum/go-ethereum/common"
@@ -37,7 +37,7 @@ type (
 		// TODO: keepers
 
 		// TODO: mappers
-		accountMapper edb.AccountMapper
+		accountMapper auth.AccountMapper
 
 		// TODO: stores and keys
 
@@ -62,11 +62,11 @@ func NewEthermintApp(logger log.Logger, db dbm.DB, cfg *ethparams.ChainConfig, s
 		accountKey: sdk.NewKVStoreKey("accounts"),
 	}
 
-	app.accountMapper = edb.NewAccountMapper(app.accountKey, cdc)
+	app.accountMapper = auth.NewAccountMapper(cdc, app.accountKey, auth.ProtoBaseAccount)
 
 	// SetSDKAddress
 	types.SetSDKAddress(sdkAddr)
-	app.SetAnteHandler(auth.EthAnteHandler(cfg, sdkAddr, app.accountMapper))
+	app.SetAnteHandler(handle.EthAnteHandler(cfg, sdkAddr, app.accountMapper))
 
 	app.MountStoresIAVL(app.accountKey)
 

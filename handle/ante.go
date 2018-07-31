@@ -5,7 +5,7 @@ import (
 	"math/big"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/ethermint/db"
+	"github.com/cosmos/cosmos-sdk/x/auth"
 	"github.com/cosmos/ethermint/types"
 	ethcmn "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -15,7 +15,7 @@ import (
 
 // EthAnteHandler handles Ethereum transactions and passes SDK transactions to
 // InnerAnteHandler.
-func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, accountMapper db.AccountMapper) sdk.AnteHandler {
+func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, accountMapper auth.AccountMapper) sdk.AnteHandler {
 	return func(ctx sdk.Context, tx sdk.Tx) (newCtx sdk.Context, res sdk.Result, abort bool) {
 		mintTx, ok := tx.(types.Transaction)
 		if !ok {
@@ -78,7 +78,7 @@ func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, ac
 
 // Embeddeded handles an embedded SDK transaction.
 // Since this is an internal ante handler, it does not need to follow the SDK interface.
-func EmbeddedAnteHandler(ctx sdk.Context, tx types.EmbeddedTx, accountMapper db.AccountMapper) (_ sdk.Context, _ sdk.Result, abort bool) {
+func EmbeddedAnteHandler(ctx sdk.Context, tx types.EmbeddedTx, accountMapper auth.AccountMapper) (_ sdk.Context, _ sdk.Result, abort bool) {
 	// Validate basic tx without relying on context
 	if err := validateBasic(tx); err != nil {
 		return ctx, err.Result(), true
@@ -91,7 +91,7 @@ func EmbeddedAnteHandler(ctx sdk.Context, tx types.EmbeddedTx, accountMapper db.
 
 	for i, sig := range sigs {
 		signer := signerAddrs[i]
-		seq, err := accountMapper.GetSequence(ctx, signer)
+		seq, err := accountMapper.GetSequence(ctx, signer.Bytes())
 		if err != nil {
 			return ctx, err.Result(), true
 		}
@@ -129,8 +129,8 @@ func validateBasic(tx types.EmbeddedTx) sdk.Error {
 }
 
 // Increment Sequence and update state
-func incrementSequenceNumber(ctx sdk.Context, accountMapper db.AccountMapper, addr ethcmn.Address) {
-	acc := accountMapper.GetAccount(ctx, addr)
-	acc.AccountNonce += 1
+func incrementSequenceNumber(ctx sdk.Context, accountMapper auth.AccountMapper, addr ethcmn.Address) {
+	acc := accountMapper.GetAccount(ctx, addr.Bytes())
+	acc.SetSequence(acc.GetSequence() + 1)
 	accountMapper.SetAccount(ctx, acc)
 }
