@@ -76,7 +76,7 @@ func (tx Transaction) ValidateBasic() sdk.Error {
 	return nil
 }
 
-// Implement sdk.Msg Interface. Can't use this because different signer types sign over different bytes
+// Implement sdk.Msg Interface. Can't use this because signBytes is hashed with chainID
 func (tx Transaction) GetSignBytes() []byte {
 	return nil
 }
@@ -94,7 +94,7 @@ func (tx Transaction) GetSigners() []sdk.AccAddress {
 }
 
 // Convert this sdk copy of Ethereum transaction to Ethereum transaction
-func (tx Transaction) ConvertTx() ethtypes.Transaction {
+func (tx Transaction) ConvertTx(chainID *big.Int) ethtypes.Transaction {
 	ethTx := ethtypes.NewTransaction(
 		tx.data.AccountNonce, *tx.data.Recipient, tx.data.Amount,
 		tx.data.GasLimit, tx.data.Price, tx.data.Payload,
@@ -102,9 +102,12 @@ func (tx Transaction) ConvertTx() ethtypes.Transaction {
 
 	// Must somehow set ethTx.data.{V, R, S}
 	// Currently the only idea I have is to make ConvertTx take in a signer
-	// Depending on signer type, reconstruct sig []byte from V, R, S
+	// Reconstruct sig []byte from V, R, S
 	// Call ethTx.WithSignature(signer, sig)
 	// Not ideal.
+	sig := recoverSig(tx.data.V, tx.data.R, tx.data.S, chainID)
+	signer := ethtypes.NewEIP155Signer(chainID)
+	ethTx.WithSignature(signer, sig)
 
 	return *ethTx
 }
@@ -209,4 +212,21 @@ func SetSDKAddress(addr ethcmn.Address) {
 	sdkAddressOnce.Do(func() {
 		sdkAddress = addr
 	})
+}
+
+func recoverSig(Vb, R, S, chainID  *big.Int) []byte {
+	r, s := R.Bytes(), S.Bytes()
+	sig := make([]byte, 65)
+	copy(sig[32 - len(r):32], r)
+	copy(sig[64 - len(s):64], s)
+	var v byte
+	if chainID.Sign() == 0 {
+		v = byte(Vb.Uint64() - 27)
+	} else {
+		chainIDMul := new(big.Int).Mul(chainID, big.NewInt(2))
+		Vb.Sub(Vb, chainIDMul)
+		v = byte(Vb.Uint64() - 35)
+	}
+	sig[64] = v
+	return sig
 }

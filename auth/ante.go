@@ -23,9 +23,6 @@ func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, ac
 		}
 
 		txData := mintTx.TxData()
-		ctx = ctx.WithGasMeter(sdk.NewGasMeter(int64(txData.GasLimit)))
-		ethTx := mintTx.ConvertTx()
-
 		newCtx = ctx.WithGasMeter(sdk.NewGasMeter(int64(txData.GasLimit)))
 
 		// AnteHandlers must have their own defer/recover in order
@@ -47,27 +44,35 @@ func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, ac
 			}
 		}()
 
+		// SDK chainID is a string representation of integer
+		chainID, ok := new(big.Int).SetString(ctx.ChainID(), 10)
+		if !ok {
+			// ErrInternal may not be correct error to throw here
+			return newCtx, sdk.ErrInternal("Invalid ChainID").Result(), true
+		}
+		ethTx := mintTx.ConvertTx(chainID)
+
 		// Create correct signer based on config and blockheight
-		signer := ethtypes.MakeSigner(config, big.NewInt(ctx.BlockHeight()))
+		signer := ethtypes.NewEIP155Signer(chainID)
 
 		// Check that signature is valid. Maybe better way to do this?
 		// TODO: Maybe we should increment AccountNonce in mapper here as well?
 		_, err := signer.Sender(&ethTx)
 		if err != nil {
-			return ctx, sdk.ErrUnauthorized("signature verification failed").Result(), true
+			return newCtx, sdk.ErrUnauthorized("signature verification failed").Result(), true
 		}
 
 		if mintTx.IsEmbeddedTx() {
 			embeddedTx, err := mintTx.GetEmbeddedTx()
 			if err != nil {
-				return ctx, err.Result(), true
+				return newCtx, err.Result(), true
 			}
 
-			return EmbeddedAnteHandler(ctx, embeddedTx, accountMapper)
+			return EmbeddedAnteHandler(newCtx, embeddedTx, accountMapper)
 		}
 
 		// handle normal Ethereum transaction
-		return ctx, sdk.Result{}, false
+		return newCtx, sdk.Result{}, false
 	}
 }
 
@@ -102,6 +107,7 @@ func EmbeddedAnteHandler(ctx sdk.Context, tx types.EmbeddedTx, accountMapper db.
 	return ctx, sdk.Result{}, false
 }
 
+// Validate that signature length and msgs are valid
 func validateBasic(tx types.EmbeddedTx) sdk.Error {
 	signers := tx.GetRequiredSigners()
 
@@ -122,6 +128,7 @@ func validateBasic(tx types.EmbeddedTx) sdk.Error {
 	return nil
 }
 
+// Increment Sequence and update state
 func incrementSequenceNumber(ctx sdk.Context, accountMapper db.AccountMapper, addr ethcmn.Address) {
 	acc := accountMapper.GetAccount(ctx, addr)
 	acc.AccountNonce += 1
