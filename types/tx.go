@@ -203,7 +203,6 @@ func NewCodec() *wire.Codec {
 	cdc := wire.NewCodec()
 	cdc.RegisterInterface((*sdk.Msg)(nil), nil)
 	cdc.RegisterConcrete(EmbeddedTx{}, "types/EmbeddedTx", nil)
-	cdc.RegisterConcrete(Account{}, "types/Account", nil)
 	return cdc
 }
 
