@@ -5,10 +5,12 @@ import (
 )
 
 const (
-	// Reserve this Codespace for Ethermint, as 0 and 1 are reserved by SDK
+	// DefaultCodespace reserves a Codespace for Ethermint, as 0 and 1 are
+	// reserved by SDK.
 	DefaultCodespace sdk.CodespaceType = 2
 
-	// Reserve CodeInvalidValue with first non-OK codetype
+	// CodeInvalidValue reserves the CodeInvalidValue with first non-OK
+	// codetype.
 	CodeInvalidValue sdk.CodeType = 1
 )
 

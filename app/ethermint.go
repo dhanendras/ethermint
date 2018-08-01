@@ -2,19 +2,19 @@ package app
 
 import (
 	bam "github.com/cosmos/cosmos-sdk/baseapp"
-	"github.com/cosmos/cosmos-sdk/x/auth"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/wire"
+	"github.com/cosmos/cosmos-sdk/x/auth"
 
-	handle "github.com/cosmos/ethermint/handle"
+	"github.com/cosmos/ethermint/handlers"
 	"github.com/cosmos/ethermint/types"
 
 	ethcmn "github.com/ethereum/go-ethereum/common"
 	ethparams "github.com/ethereum/go-ethereum/params"
 
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	cmn "github.com/tendermint/tendermint/libs/common"
+	tmcmn "github.com/tendermint/tendermint/libs/common"
 	dbm "github.com/tendermint/tendermint/libs/db"
-	"github.com/tendermint/tendermint/libs/log"
+	tmlog "github.com/tendermint/tendermint/libs/log"
 )
 
 const (
@@ -31,19 +31,9 @@ type (
 		codec  *wire.Codec
 		sealed bool
 
-		// TODO: stores and keys
-		accountKey *sdk.KVStoreKey
-
-		// TODO: keepers
-
-		// TODO: mappers
+		accountKey    *sdk.KVStoreKey
 		accountMapper auth.AccountMapper
-
-		// TODO: stores and keys
-
-		// TODO: keepers
-
-		// TODO: mappers
+		// TODO: keys, stores, mappers, and keepers
 	}
 
 	// Options is a function signature that provides the ability to modify
@@ -53,7 +43,7 @@ type (
 
 // NewEthermintApp returns a reference to a new initialized Ethermint
 // application.
-func NewEthermintApp(logger log.Logger, db dbm.DB, cfg *ethparams.ChainConfig, sdkAddr ethcmn.Address, opts ...Options) *EthermintApp {
+func NewEthermintApp(logger tmlog.Logger, db dbm.DB, cfg *ethparams.ChainConfig, sdkAddr ethcmn.Address, opts ...Options) *EthermintApp {
 	cdc := createCodec()
 
 	app := &EthermintApp{
@@ -64,10 +54,10 @@ func NewEthermintApp(logger log.Logger, db dbm.DB, cfg *ethparams.ChainConfig, s
 
 	app.accountMapper = auth.NewAccountMapper(cdc, app.accountKey, auth.ProtoBaseAccount)
 
-	// SetSDKAddress
+	// TODO: This should probably be set as part of the context?
 	types.SetSDKAddress(sdkAddr)
-	app.SetAnteHandler(handle.EthAnteHandler(cfg, sdkAddr, app.accountMapper))
 
+	app.SetAnteHandler(handlers.EthAnteHandler(cfg, sdkAddr, app.accountMapper))
 	app.MountStoresIAVL(app.accountKey)
 
 	for _, opt := range opts {
@@ -76,7 +66,7 @@ func NewEthermintApp(logger log.Logger, db dbm.DB, cfg *ethparams.ChainConfig, s
 
 	err := app.LoadLatestVersion(app.accountKey)
 	if err != nil {
-		cmn.Exit(err.Error())
+		tmcmn.Exit(err.Error())
 	}
 
 	app.seal()

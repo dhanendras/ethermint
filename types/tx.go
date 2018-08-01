@@ -8,17 +8,29 @@ import (
 	"sync/atomic"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/wire"
+	"github.com/pkg/errors"
 
 	ethcmn "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
+const (
+	// TypeTxEthereum reflects an Ethereum Transaction type.
+	TypeTxEthereum = "Ethereum"
+)
+
 var (
 	sdkAddress     ethcmn.Address
 	sdkAddressOnce sync.Once
-	Cdc            = NewCodec()
 )
+
+// SetSDKAddress sets the internal sdkAddress value. It should ever be set
+// once.
+func SetSDKAddress(addr ethcmn.Address) {
+	sdkAddressOnce.Do(func() {
+		sdkAddress = addr
+	})
+}
 
 type (
 	// Transaction implements the Ethereum transaction structure as an exact
@@ -60,28 +72,32 @@ func (tx Transaction) TxData() TxData {
 	return tx.data
 }
 
-// Implement sdk.Msg Interface
-func (tx Transaction) Type() string { return "Eth" }
+// Type implements the sdk.Msg interface. It returns the type of the
+// Transaction.
+func (tx Transaction) Type() string { return TypeTxEthereum }
 
-// Implement sdk.Msg Interface
+// ValidateBasic implements the sdk.Msg interface. It performs basic validation
+// checks of a Transaction. If returns an sdk.Error if validation fails.
 func (tx Transaction) ValidateBasic() sdk.Error {
 	if tx.data.Price.Sign() != 1 {
-		return ErrInvalidValue(DefaultCodespace, "Price must be positive")
+		return ErrInvalidValue(DefaultCodespace, "price must be positive")
 	}
 
 	if tx.data.Amount.Sign() != 1 {
-		return ErrInvalidValue(DefaultCodespace, "Amount must be positive")
+		return ErrInvalidValue(DefaultCodespace, "amount must be positive")
 	}
 
 	return nil
 }
 
-// Implement sdk.Msg Interface. Can't use this because signBytes is hashed with chainID
+// GetSignBytes implements the sdk.Msg Interface. It returns nil as the bytes
+// signed must include the chainID and sequence number.
 func (tx Transaction) GetSignBytes() []byte {
 	return nil
 }
 
-// GetSigners implements the Cosmos sdk.Msg interface.
+// GetSigners implements the Cosmos sdk.Msg interface. It will return a single
+// SDK account signer based on the from address.
 //
 // CONTRACT: The transaction must already be signed.
 func (tx Transaction) GetSigners() []sdk.AccAddress {
@@ -93,38 +109,40 @@ func (tx Transaction) GetSigners() []sdk.AccAddress {
 	return []sdk.AccAddress{addr}
 }
 
-// Convert this sdk copy of Ethereum transaction to Ethereum transaction
+// ConvertTx attempts to converts a Transaction to a new Ethereum transaction
+// with the signature set. The signature if first recovered and then a new
+// Transaction is created with that signature. If setting the signature fails,
+// a panic will be triggered.
 func (tx Transaction) ConvertTx(chainID *big.Int) ethtypes.Transaction {
 	ethTx := ethtypes.NewTransaction(
 		tx.data.AccountNonce, *tx.data.Recipient, tx.data.Amount,
 		tx.data.GasLimit, tx.data.Price, tx.data.Payload,
 	)
 
-	// Must somehow set ethTx.data.{V, R, S}
-	// Currently the only idea I have is to make ConvertTx take in a signer
-	// Reconstruct sig []byte from V, R, S
-	// Call ethTx.WithSignature(signer, sig)
-	// Not ideal.
 	sig := recoverSig(tx.data.V, tx.data.R, tx.data.S, chainID)
 	signer := ethtypes.NewEIP155Signer(chainID)
-	ethTx.WithSignature(signer, sig)
+
+	ethTx, err := ethTx.WithSignature(signer, sig)
+	if err != nil {
+		panic(errors.Wrap(err, "failed to create new transaction with a given signature"))
+	}
 
 	return *ethTx
 }
 
-// IsSDKTx returns a boolean reflecting if the transaction is an SDK
-// transaction or not based on the recipient address.
-func (tx Transaction) IsEmbeddedTx() bool {
+// HasEmbeddedTx returns a boolean reflecting if the transaction contains an
+// SDK transaction or not based on the recipient address.
+func (tx Transaction) HasEmbeddedTx() bool {
 	return bytes.Equal(tx.data.Recipient.Bytes(), sdkAddress.Bytes())
 }
 
 // GetMsgs implements the Cosmos sdk.Tx interface. If the to/recipient address
 // is the SDK address, the inner (SDK) messages will be returned.
 func (tx Transaction) GetMsgs() []sdk.Msg {
-	if tx.IsEmbeddedTx() {
+	if tx.HasEmbeddedTx() {
 		innerTx, err := tx.GetEmbeddedTx()
 		if err != nil {
-			panic(err)
+			panic(errors.Wrap(err, "failed to get embedded transaction"))
 		}
 
 		return innerTx.GetMsgs()
@@ -133,30 +151,39 @@ func (tx Transaction) GetMsgs() []sdk.Msg {
 	return []sdk.Msg{tx}
 }
 
-// Get inner tx. Note: Will panic if decoding fails
+// GetEmbeddedTx returns the embedded SDK transaction from an Ethereum
+// transaction. It returns an error if decoding the inner transaction fails.
+//
+// CONTRACT: The payload field of an Ethereum transaction must contain a valid
+// encoded SDK transaction.
 func (tx Transaction) GetEmbeddedTx() (EmbeddedTx, sdk.Error) {
-	cdc := NewCodec()
-	innerTx := EmbeddedTx{}
-	err := cdc.UnmarshalBinary(tx.data.Payload, &innerTx)
+	etx := EmbeddedTx{}
+
+	err := codec.UnmarshalBinary(tx.data.Payload, &etx)
 	if err != nil {
-		return EmbeddedTx{}, sdk.ErrTxDecode("Inner sdk transaction decoding failed")
+		return EmbeddedTx{}, sdk.ErrTxDecode("embedded sdk transaction decoding failed")
 	}
 
-	return innerTx, nil
+	return etx, nil
 }
 
-// EmbeddedTx to be encoded into payload to handle sdk Msgs
+// EmbeddedTx implements an SDK transaction. It is to be encoded into the
+// payload field of an Ethereum transaction in order to route and handle SDK
+// transactions.
 type EmbeddedTx struct {
 	Messages   []sdk.Msg
 	Signatures [][]byte
 }
 
-// Implement sdk.Tx interface
+// GetMsgs implements the sdk.Tx interface. It returns all the SDK transaction
+// messages.
 func (tx EmbeddedTx) GetMsgs() []sdk.Msg {
 	return tx.Messages
 }
 
-// Return all required signers of Tx accumulated from msgs
+// GetRequiredSigners returns all the required signers of an SDK transaction
+// accumulated from messages. It returns them in a deterministic fashion given
+// a list of messages.
 func (tx EmbeddedTx) GetRequiredSigners() []ethcmn.Address {
 	seen := map[string]bool{}
 
@@ -173,60 +200,80 @@ func (tx EmbeddedTx) GetRequiredSigners() []ethcmn.Address {
 	return signers
 }
 
-// Creates simple SignDoc for EmbeddedTx signer to sign over
-type EmbeddedSignDoc struct {
-	ChainID  string
-	Msgs     []json.RawMessage
-	AccountNumber int64
-	Sequence int64
-}
-
-// Creates signBytes for signer with given arguments
-func EmbeddedSignBytes(chainID string, msgs []sdk.Msg, sequence int64) []byte {
+// SignBytes creates signature bytes for a signer to sign. The signature bytes
+// require a chainID and an account number. The signature bytes are JSON
+// encoded.
+func (tx EmbeddedTx) SignBytes(chainID string, accnum, sequence int64) []byte {
 	var msgsBytes []json.RawMessage
-	for _, msg := range msgs {
+	for _, msg := range tx.GetMsgs() {
 		msgsBytes = append(msgsBytes, json.RawMessage(msg.GetSignBytes()))
 	}
+
 	signDoc := EmbeddedSignDoc{
 		ChainID:  chainID,
 		Msgs:     msgsBytes,
+		AccountNumber: accnum,
 		Sequence: sequence,
 	}
-	bz, err := Cdc.MarshalJSON(signDoc)
+
+	bz, err := codec.MarshalJSON(signDoc)
 	if err != nil {
 		panic(err)
 	}
+
 	return bz
 }
 
-func NewCodec() *wire.Codec {
-	cdc := wire.NewCodec()
-	cdc.RegisterInterface((*sdk.Msg)(nil), nil)
-	cdc.RegisterConcrete(EmbeddedTx{}, "types/EmbeddedTx", nil)
-	return cdc
+// ValidateBasic performs basic validation checks of an EmbeddedTx. If returns
+// an sdk.Error if validation fails.
+func (tx EmbeddedTx) ValidateBasic() sdk.Error {
+	signers := tx.GetRequiredSigners()
+
+	if len(tx.Signatures) != len(signers) {
+		return sdk.ErrUnauthorized("provided signature length does not match required length")
+	}
+
+	for _, msg := range tx.GetMsgs() {
+		if msg.Type() == TypeTxEthereum {
+			return sdk.ErrTxDecode("invalid embedded message; cannot have Ethereum transaction in EmbeddedTx")
+		}
+
+		if err := msg.ValidateBasic(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-// SetSDKAddress sets the internal sdkAddress value. It should ever be set
-// once.
-func SetSDKAddress(addr ethcmn.Address) {
-	sdkAddressOnce.Do(func() {
-		sdkAddress = addr
-	})
+// EmbeddedSignDoc implements a simple SignDoc for a EmbeddedTx signer to sign
+// over.
+type EmbeddedSignDoc struct {
+	ChainID       string
+	Msgs          []json.RawMessage
+	AccountNumber int64
+	Sequence      int64
 }
 
-func recoverSig(Vb, R, S, chainID  *big.Int) []byte {
+// recoverSig recovers a signature according to the Ethereum specification.
+func recoverSig(Vb, R, S, chainID *big.Int) []byte {
+	var v byte
+
 	r, s := R.Bytes(), S.Bytes()
 	sig := make([]byte, 65)
-	copy(sig[32 - len(r):32], r)
-	copy(sig[64 - len(s):64], s)
-	var v byte
+
+	copy(sig[32-len(r):32], r)
+	copy(sig[64-len(s):64], s)
+
 	if chainID.Sign() == 0 {
 		v = byte(Vb.Uint64() - 27)
 	} else {
 		chainIDMul := new(big.Int).Mul(chainID, big.NewInt(2))
 		Vb.Sub(Vb, chainIDMul)
+
 		v = byte(Vb.Uint64() - 35)
 	}
+
 	sig[64] = v
 	return sig
 }

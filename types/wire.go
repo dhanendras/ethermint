@@ -5,12 +5,19 @@ import (
 	"github.com/cosmos/cosmos-sdk/wire"
 )
 
-// RegisterWire registers all the necessary types with amino.
+var codec = wire.NewCodec()
+
+func init() {
+	RegisterWire(codec)
+}
+
+// RegisterWire registers all the necessary types with amino for the given
+// codec.
 //
 // TODO: We may need to redesign the registration process if the number and
 // complexity of the types grows in order to provide better abstraction and
 // encapsulation.
-func RegisterWire(cdc *wire.Codec) {
-	cdc.RegisterInterface((*sdk.Msg)(nil), nil)
-	cdc.RegisterConcrete(EmbeddedTx{}, "types/EmbeddedTx", nil)
+func RegisterWire(codec *wire.Codec) {
+	codec.RegisterInterface((*sdk.Msg)(nil), nil)
+	codec.RegisterConcrete(EmbeddedTx{}, "types/EmbeddedTx", nil)
 }
