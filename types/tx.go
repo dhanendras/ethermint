@@ -6,12 +6,14 @@ import (
 	"math/big"
 	"sync"
 	"sync/atomic"
+	"io"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/pkg/errors"
 
 	ethcmn "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 const (
@@ -167,6 +169,22 @@ func (tx Transaction) GetEmbeddedTx() (EmbeddedTx, sdk.Error) {
 	return etx, nil
 }
 
+// EncodeRLP implements rlp.Encoder
+func (tx *Transaction) EncodeRLP(w io.Writer) error {
+	return rlp.Encode(w, &tx.data)
+}
+
+// DecodeRLP implements rlp.Decoder
+func (tx *Transaction) DecodeRLP(s *rlp.Stream) error {
+	_, size, _ := s.Kind()
+	err := s.Decode(&tx.data)
+	if err == nil {
+		tx.size.Store(ethcmn.StorageSize(rlp.ListSize(size)))
+	}
+
+	return err
+}
+
 // EmbeddedTx implements an SDK transaction. It is to be encoded into the
 // payload field of an Ethereum transaction in order to route and handle SDK
 // transactions.
@@ -269,9 +287,9 @@ func recoverSig(Vb, R, S, chainID *big.Int) []byte {
 		v = byte(Vb.Uint64() - 27)
 	} else {
 		chainIDMul := new(big.Int).Mul(chainID, big.NewInt(2))
-		Vb.Sub(Vb, chainIDMul)
+		V := new(big.Int).Sub(Vb, chainIDMul)
 
-		v = byte(Vb.Uint64() - 35)
+		v = byte(V.Uint64() - 35)
 	}
 
 	sig[64] = v
