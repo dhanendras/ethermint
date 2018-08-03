@@ -12,14 +12,13 @@ import (
 	ethcmn "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
-	ethparams "github.com/ethereum/go-ethereum/params"
 
 	"github.com/pkg/errors"
 )
 
 // EthAnteHandler handles Ethereum transactions and passes SDK transactions to
 // InnerAnteHandler.
-func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, accountMapper auth.AccountMapper) sdk.AnteHandler {
+func EthAnteHandler(sdkAddress ethcmn.Address, accountMapper auth.AccountMapper) sdk.AnteHandler {
 	return func(ctx sdk.Context, tx sdk.Tx) (newCtx sdk.Context, res sdk.Result, abort bool) {
 		mintTx, ok := tx.(types.Transaction)
 		if !ok {
@@ -59,7 +58,6 @@ func EthAnteHandler(config *ethparams.ChainConfig, sdkAddress ethcmn.Address, ac
 		signer := ethtypes.NewEIP155Signer(chainID)
 
 		// Check that signature is valid. Maybe better way to do this?
-		// TODO: Maybe we should increment AccountNonce in mapper here as well?
 		_, err := signer.Sender(&ethTx)
 		if err != nil {
 			return newCtx, sdk.ErrUnauthorized("signature verification failed").Result(), true
@@ -99,8 +97,6 @@ func embeddedAnteHandler(ctx sdk.Context, tx types.EmbeddedTx, am auth.AccountMa
 		accnum := acc.GetAccountNumber()
 		seq := acc.GetSequence()
 
-		// TODO: Do we not need to also include the account number as part of
-		// the data to sign?
 		signBytes := tx.SignBytes(ctx.ChainID(), accnum, seq)
 
 		if err := validateSigner(ctx, signBytes, sig, signer); err != nil {

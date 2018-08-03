@@ -2,17 +2,21 @@ package types
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
+	"io"
 	"math/big"
 	"sync"
 	"sync/atomic"
-	"io"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/pkg/errors"
 
 	ethcmn "github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/crypto/sha3"
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -69,9 +73,73 @@ type (
 	}
 )
 
+// NewTransaction mimics ethereum's NewTransaction method
+func NewTransaction(nonce uint64, to ethcmn.Address, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte) *Transaction {
+	if len(data) > 0 {
+		data = ethcmn.CopyBytes(data)
+	}
+	d := TxData{
+		AccountNonce: nonce,
+		Recipient:    &to,
+		Payload:      data,
+		Amount:       new(big.Int),
+		GasLimit:     gasLimit,
+		Price:        new(big.Int),
+		V:            new(big.Int),
+		R:            new(big.Int),
+		S:            new(big.Int),
+	}
+	if amount != nil {
+		d.Amount.Set(amount)
+	}
+	if gasPrice != nil {
+		d.Price.Set(gasPrice)
+	}
+
+	return &Transaction{data: d}
+}
+
 // TxData returns the Ethereum transaction data.
 func (tx Transaction) TxData() TxData {
 	return tx.data
+}
+
+// Sign takes the private key and chainID to sign Ethereum transaction
+// according to EIP155 standard. Mutates transaction to populate V, R, S fields.
+func (tx *Transaction) Sign(chainID *big.Int, priv *ecdsa.PrivateKey) {
+	h := rlpHash([]interface{}{
+		tx.data.AccountNonce,
+		tx.data.Price,
+		tx.data.GasLimit,
+		tx.data.Recipient,
+		tx.data.Amount,
+		tx.data.Payload,
+		chainID, uint(0), uint(0),
+	})
+
+	sig, err := crypto.Sign(h[:], priv)
+	if err != nil {
+		panic(err)
+	}
+
+	if len(sig) != 65 {
+		panic(fmt.Sprintf("wrong size for signature: got %d, want 65", len(sig)))
+	}
+	r := new(big.Int).SetBytes(sig[:32])
+	s := new(big.Int).SetBytes(sig[32:64])
+
+	var v *big.Int
+	if chainID.Sign() == 0 {
+		v = new(big.Int).SetBytes([]byte{sig[64] + 27})
+	} else {
+		v = big.NewInt(int64(sig[64] + 35))
+		chainIDMul := new(big.Int).Mul(chainID, big.NewInt(2))
+		v.Add(v, chainIDMul)
+	}
+
+	tx.data.V = v
+	tx.data.R = r
+	tx.data.S = s
 }
 
 // Type implements the sdk.Msg interface. It returns the type of the
@@ -228,10 +296,10 @@ func (tx EmbeddedTx) SignBytes(chainID string, accnum, sequence int64) []byte {
 	}
 
 	signDoc := EmbeddedSignDoc{
-		ChainID:  chainID,
-		Msgs:     msgsBytes,
+		ChainID:       chainID,
+		Msgs:          msgsBytes,
 		AccountNumber: accnum,
-		Sequence: sequence,
+		Sequence:      sequence,
 	}
 
 	bz, err := codec.MarshalJSON(signDoc)
@@ -294,4 +362,11 @@ func recoverSig(Vb, R, S, chainID *big.Int) []byte {
 
 	sig[64] = v
 	return sig
+}
+
+func rlpHash(x interface{}) (h ethcmn.Hash) {
+	hw := sha3.NewKeccak256()
+	rlp.Encode(hw, x)
+	hw.Sum(h[:0])
+	return h
 }
